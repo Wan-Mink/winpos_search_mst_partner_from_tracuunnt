@@ -1,15 +1,22 @@
 import requests
 import logging
 from bs4 import BeautifulSoup
+import tkinter as tk
+from PIL import Image, ImageTk
+import json
+from io import BytesIO
+import random
+import re
 
 from odoo import models, api
 from odoo.exceptions import UserError
 
 _logger = logging.getLogger(__name__)
-
+session = requests.Session()
 class ResPartner(models.Model):
     _inherit = 'res.partner'
-    
+    session = requests.Session()
+
     def action_search_mst_partner(self):
         self.ensure_one()
         if not self.vat:
@@ -29,57 +36,97 @@ class ResPartner(models.Model):
         except (requests.exceptions.RequestException, UserError) as e:
             _logger.error("Lỗi khi tìm kiếm đối tác với MST %s: %s", self.vat, e)
             raise UserError(f"Không thể lấy thông tin công ty: {e}") from e
-
-    @staticmethod
-    def _get_link(tax_code):
-        """Tìm URL chi tiết của công ty từ trang kết quả tìm kiếm."""
-        url = f"https://thuvienphapluat.vn/ma-so-thue/tra-cuu-ma-so-thue-doanh-nghiep?timtheo=ma-so-thue&tukhoa={tax_code}"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        }
+    def get_captcha():
+        """Lấy hình CAPTCHA mới từ server và cập nhật GUI"""
         try:
-            response = requests.get(url, headers=headers, timeout=15)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.content, 'html.parser')
-            result_div = soup.find("div", {"id": "dvResultSearch"})
-            if result_div:
-                try:
-                    first_result = result_div.find("table").find("tbody").find("tr").find("a")
-                    if first_result and first_result.get('href'):
-                        return "https://thuvienphapluat.vn" + first_result.get('href')
-                except AttributeError:
-                    raise UserError("Không thể phân tích kết quả tìm kiếm để tìm liên kết của công ty.")
+            # Thêm tham số ngẫu nhiên để tránh cache
+            timestamp = random.randint(10000, 99999)
+            url = f"https://tracuunnt.gdt.gov.vn/tcnnt/captcha.png?t={timestamp}"
             
-            raise UserError("Không tìm thấy thông tin công ty cho Mã số thuế đã cung cấp.")
-        except requests.exceptions.RequestException as e:
-            raise UserError(f"Lỗi kết nối: {e}") from e
-
-    @staticmethod
-    def _get_info(url):
-        """Lấy thông tin chi tiết của công ty từ URL."""
-        _logger.debug("Đang lấy thông tin từ URL: %s", url)
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        }
-        try:
-            response = requests.get(url, headers=headers, timeout=15)
+            # Gửi request lấy hình CAPTCHA với session
+            response = session.get(url)
             response.raise_for_status()
-            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            # Xử lý ảnh và cập nhật GUI
+            image = Image.open(BytesIO(response.content))
+            photo = ImageTk.PhotoImage(image)
+            
+            label_captcha.configure(image=photo)
+            label_captcha.image = photo  # Giữ reference
+            label_status.config(text="CAPTCHA đã tải thành công!", fg="green")
+            
+        except Exception as e:
+            label_status.config(text=f"Lỗi: {str(e)}", fg="red")
 
-            # Hàm trợ giúp để lấy text một cách an toàn
-            def get_text(element_id):
-                element = soup.find("span", {"id": element_id})
-                return element.text.strip() if element else None
+    def find_data_from_html(data):
+        left_str = data.find('nntJson = ')
+        right_str = data[left_str:].find('</script>')
+        return json.loads(data[left_str:left_str+right_str].replace('nntJson = ', '').strip()[:-1])
 
-            info = {
-                'vat': get_text("fill_MaSoThue"),
-                'name': get_text("fill_TenDoanhNghiep"),
-                'global_name': get_text("fill_TenQuocTe"),
-                'short_name': get_text("fill_TenVietTat"),
-                'address': get_text("fill_DiaChiTruSo"),
+    def lookup_mst():
+        """Thực hiện tra cứu MST với CAPTCHA và MST nhập vào"""
+        mst = entry_mst.get().strip()
+        captcha_text = entry_captcha.get().strip()
+        
+        if not mst:
+            label_status.config(text="Vui lòng nhập mã số thuế!", fg="orange")
+            return
+        if not captcha_text:
+            label_status.config(text="Vui lòng nhập CAPTCHA!", fg="orange")
+            return
+        
+        try:
+            # Chuẩn bị dữ liệu gửi đi
+            payload = {
+                'mst': mst,
+                'captcha': captcha_text
             }
-            if not info.get('name'):
-                raise UserError("Không tìm thấy chi tiết công ty trên trang. Cấu trúc trang web có thể đã thay đổi.")
-            return info
-        except requests.exceptions.RequestException as e:
-            raise UserError(f"Lỗi kết nối: {e}") from e
+            
+            # Gửi request POST với session đã duy trì
+            response = session.post(
+                "https://tracuunnt.gdt.gov.vn/tcnnt/mstdn.jsp",
+                data=payload,
+                headers={
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Referer': 'https://tracuunnt.gdt.gov.vn/tcnnt/mstdn.jsp'
+                }
+            )
+            response.raise_for_status()
+            
+            # Phân tích kết quả trả về
+            soup = BeautifulSoup(response.text, 'html.parser')
+            print (find_data_from_html(response.text))
+            error_message = soup.find('p', class_='errormess')
+            result_table = soup.find('table', class_='form')
+            
+            if error_message:
+                # Xử lý trường hợp lỗi
+                error_text = re.sub(r'\s+', ' ', error_message.get_text()).strip()
+                label_status.config(text=f"Lỗi: {error_text}", fg="red")
+            elif result_table:
+                # Trích xuất kết quả thành công
+                results = []
+                for row in result_table.find_all('tr'):
+                    cells = row.find_all('td')
+                    if len(cells) == 2:
+                        label = cells[0].get_text(strip=True)
+                        value = cells[1].get_text(strip=True)
+                        results.append(f"{label}: {value}")
+                
+                result_text = "\n".join(results)
+                label_status.config(
+                    text=f"Tra cứu thành công!\n{result_text}", 
+                    fg="green",
+                    justify=tk.LEFT
+                )
+            else:
+                label_status.config(text="Không tìm thấy kết quả", fg="blue")
+                
+            # Tải lại CAPTCHA sau mỗi lần gửi
+            get_captcha()
+            
+        except Exception as e:
+            label_status.config(text=f"Lỗi kết nối: {str(e)}", fg="red")
+
+
+    

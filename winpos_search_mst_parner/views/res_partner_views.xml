@@ -6,12 +6,21 @@
             <field name="inherit_id" ref="base.view_partner_form"/>
             <field name="arch" type="xml">
                 <xpath expr="//field[@name='vat']" position="replace">
-                    <label for="vat" string="Tax ID"/>
+                    <label for="vat" string="MST"/>
                     <div class="d-flex align-items-center">
                         <field name="vat" nolabel="1" placeholder="Nhập mã số thuế" readonly="parent_id"/>
                         <button name="action_search_mst_partner" type="object"
                                 icon="fa-search" class="btn-link ps-1"
                                 title="Search information for this Tax ID"/>
+                    </div>
+                </xpath>
+                <xpath expr="//field[@name='captcha']" position="after">
+                    <label for="captcha" string="CAPTCHA"/>
+                    <div class="d-flex align-items-center">
+                        <field name="captcha" nolabel="1" placeholder="Nhập CAPTCHA" readonly="parent_id"/>
+                        <button name="action_search_mst_partner" type="object"
+                                icon="fa-search" class="btn-link ps-1"
+                                title="submit information for this CAPTCHA"/>
                     </div>
                 </xpath>
             </field>
